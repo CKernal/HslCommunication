@@ -182,7 +182,174 @@ namespace HslCommunication.Profinet.Melsec
 
 
         #endregion
-        
+
+        #region BeginRead Support
+        /// <summary>
+        /// 异步从三菱PLC中读取想要的数据，读取结果需在回调中获取
+        /// </summary>
+        /// <param name="address">读取地址，格式为"M100","D100","W1A0"</param>
+        /// <param name="length">读取的数据长度</param>
+        /// <param name="readCallback">读取结果回调函数</param>
+        public override void BeginRead(string address, ushort length, Action<OperateResult<byte[]>> readCallback)
+        {
+            // 获取指令
+            var command = BuildReadCommand(address, length, PLCNumber);
+            if (!command.IsSuccess)
+            {
+                readCallback(OperateResult.CreateFailedResult<byte[]>(command));
+                return;
+            }
+
+            // 核心交互
+            ReadFromCoreServer(command.Content, read =>
+            {
+                if (!read.IsSuccess)
+                {
+                    readCallback(OperateResult.CreateFailedResult<byte[]>(read));
+                    return;
+                }
+
+                // 错误代码验证
+                if (read.Content[1] != 0)
+                {
+                    readCallback(new OperateResult<byte[]>(read.Content[1], StringResources.Language.MelsecPleaseReferToManulDocument));
+                    return;
+                }
+
+                // 数据解析，需要传入是否使用位的参数
+                readCallback(ExtractActualData(read.Content, command.Content[0] == 0x00));
+            });
+        }
+
+        /// <summary>
+        /// 异步从三菱PLC中批量读取位软元件，读取结果需在回调中获取
+        /// </summary>
+        /// <param name="address">起始地址</param>
+        /// <param name="length">读取的长度</param>
+        /// <param name="readCallback">读取结果回调函数</param>
+        public void BeginReadBool(string address, ushort length, Action<OperateResult<bool[]>> readCallback)
+        {
+            // 地址解析
+            var analysis = MelsecHelper.McA1EAnalysisAddress(address);
+            if (!analysis.IsSuccess)
+            {
+                readCallback(OperateResult.CreateFailedResult<bool[]>(analysis));
+                return;
+            }
+
+            // 字读取验证
+            if (analysis.Content1.DataType == 0x00)
+            {
+                readCallback(new OperateResult<bool[]>(StringResources.Language.MelsecReadBitInfo));
+                return;
+            }
+
+            // 核心交互
+            BeginRead(address, length, read =>
+            {
+                if (!read.IsSuccess)
+                {
+                    readCallback(OperateResult.CreateFailedResult<bool[]>(read));
+                    return;
+                }
+
+                // 结果提取
+                bool[] Content = new bool[read.Content.Length];
+                for (int i = 0; i < read.Content.Length; i++)
+                {
+                    Content[i] = read.Content[i] == 0x01;
+                }
+                readCallback(OperateResult.CreateSuccessResult(Content));
+            });
+        }
+
+        /// <summary>
+        /// 异步从三菱PLC中读取位软元件，读取结果需在回调中获取
+        /// </summary>
+        /// <param name="address">起始地址</param>
+        /// <param name="readCallback">读取结果回调函数</param>
+        public void BeginReadBool(string address, Action<OperateResult<bool>> readCallback)
+        {
+            BeginReadBool(address, 1, read =>
+            {
+                if (!read.IsSuccess)
+                {
+                    readCallback(OperateResult.CreateFailedResult<bool>(read));
+                    return;
+                }
+                readCallback(OperateResult.CreateSuccessResult<bool>(read.Content[0]));
+            });
+        }
+        #endregion
+
+        #region BeginWrite Support
+        /// <summary>
+        /// 异步向PLC写入数据，数据格式为原始的字节类型
+        /// </summary>
+        /// <param name="address">初始地址</param>
+        /// <param name="value">原始的字节数据</param>
+        /// <param name="writeCallback">写入结果回调函数</param>
+        public override void BeginWrite(string address, byte[] value, Action<OperateResult> writeCallback)
+        {
+            // 解析指令
+            OperateResult<byte[]> command = BuildWriteCommand(address, value, PLCNumber);
+            if (!command.IsSuccess)
+            {
+                writeCallback(command);
+                return;
+            }
+
+            // 核心交互
+            ReadFromCoreServer(command.Content, read =>
+            {
+                if (!read.IsSuccess)
+                {
+                    writeCallback(read);
+                    return;
+                }
+
+                // 错误码校验 (在A兼容1E协议中，结束代码后面紧跟的是异常信息的代码)
+                if (read.Content[1] != 0)
+                {
+                    writeCallback(new OperateResult(read.Content[1], StringResources.Language.MelsecPleaseReferToManulDocument));
+                    return;
+                }
+
+                // 成功
+                writeCallback(OperateResult.CreateSuccessResult());
+            });
+        }
+
+        /// <summary>
+        /// 异步向PLC中位软元件写入bool值，写入结果需在回调中获取
+        /// </summary>
+        /// <param name="address">要写入的数据地址</param>
+        /// <param name="value">要写入的实际数据</param>
+        /// <param name="writeCallback">写入结果回调函数</param>
+        public void BeginWrite(string address, bool value, Action<OperateResult> writeCallback)
+        {
+            BeginWrite(address, new bool[] { value }, write =>
+            {
+                writeCallback(write);
+            });
+        }
+
+        /// <summary>
+        /// 异步向PLC中位软元件写入bool数组，比如你写入M100,values[0]对应M100，写入结果需在回调中获取
+        /// </summary>
+        /// <param name="address">要写入的数据地址</param>
+        /// <param name="values">要写入的实际数据，可以指定任意的长度</param>
+        /// <param name="writeCallback">写入结果回调函数</param>
+        public void BeginWrite(string address, bool[] values, Action<OperateResult> writeCallback)
+        {
+            byte[] writeByte = values.Select(m => m ? (byte)0x01 : (byte)0x00).ToArray();
+            BeginWrite(address, writeByte, write =>
+            {
+                writeCallback(write);
+            });
+        }
+        #endregion
+
         #region Object Override
 
         /// <summary>

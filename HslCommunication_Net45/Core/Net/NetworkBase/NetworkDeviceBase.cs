@@ -1374,6 +1374,654 @@ namespace HslCommunication.Core.Net
 
         #endregion
 
+        #region Begin Read Write Support
+
+        #region Begin Read Write Virtual Method
+        /// <summary>
+        /// 异步从设备读取原始数据
+        /// </summary>
+        /// <param name="address">起始地址</param>
+        /// <param name="length">地址长度</param>
+        /// <param name="readCallback">读取结果回调函数</param>
+        /// <remarks>需要在继承类中重写实现，并且实现地址解析操作</remarks>
+        public virtual void BeginRead(string address, ushort length, Action<OperateResult<byte[]>> readCallback)
+        {
+            readCallback(new OperateResult<byte[]>());
+        }
+
+        /// <summary>
+        /// 异步将原始数据写入设备
+        /// </summary>
+        /// <param name="address">起始地址</param>
+        /// <param name="value">地址长度</param>
+        /// <param name="writeCallback">写入结果回调函数</param>
+        /// <remarks>需要在继承类中重写实现，并且实现地址解析操作</remarks>
+        public virtual void BeginWrite(string address, byte[] value, Action<OperateResult> writeCallback)
+        {
+            writeCallback(new OperateResult());
+        }
+        #endregion
+
+        #region Begin Customer Read Write Support
+        /// <summary>
+        /// 异步读取自定义类型的数据，需要规定解析规则
+        /// </summary>
+        /// <typeparam name="T">类型名称</typeparam>
+        /// <param name="address">起始地址</param>
+        /// <param name="readCallback">读取结果回调函数</param>
+        /// <remarks>
+        /// 需要是定义一个类，选择好相对于的ByteTransform实例，才能调用该方法。
+        /// </remarks>
+        public void BeginReadCustomer<T>(string address, Action<OperateResult<T>> readCallback) where T : IDataTransfer, new()
+        {
+            OperateResult<T> result = new OperateResult<T>();
+            T Content = new T();
+            BeginRead(address, Content.ReadCount, read =>
+            {
+                if (read.IsSuccess)
+                {
+                    Content.ParseSource(read.Content);
+                    result.Content = Content;
+                    result.IsSuccess = true;
+                }
+                else
+                {
+                    result.ErrorCode = read.ErrorCode;
+                    result.Message = read.Message;
+                }
+                readCallback(result);
+            });
+        }
+
+        /// <summary>
+        /// 异步写入自定义类型的数据到设备去，需要规定生成字节的方法
+        /// </summary>
+        /// <typeparam name="T">自定义类型</typeparam>
+        /// <param name="address">起始地址</param>
+        /// <param name="data">实例对象</param>
+        /// <param name="writeCallback">写入结果回调函数</param>
+        /// <remarks>
+        /// 需要是定义一个类，选择好相对于的<see cref="IDataTransfer"/>实例，才能调用该方法。
+        /// </remarks>
+        public void BeginWriteCustomer<T>(string address, T data, Action<OperateResult> writeCallback) where T : IDataTransfer, new()
+        {
+            BeginWrite(address, data.ToSource(), write =>
+            {
+                writeCallback(write);
+            });
+        }
+
+        #endregion
+
+        #region Begin Read Support
+
+        /// <summary>
+        /// 异步读取设备的short类型的数据
+        /// </summary>
+        /// <param name="address">起始地址</param>
+        /// <param name="readCallback">读取结果回调函数</param>
+        public void BeginReadInt16(string address, Action<OperateResult<short>> readCallback)
+        {
+            BeginRead(address, WordLength, read =>
+            {
+                readCallback(GetInt16ResultFromBytes(read));
+            });
+        }
+
+        /// <summary>
+        /// 异步读取设备的short类型的数组
+        /// </summary>
+        /// <param name="address">起始地址</param>
+        /// <param name="length">数组长度</param>
+        /// <param name="readCallback">读取结果回调函数</param>
+        public void BeginReadInt16(string address, ushort length, Action<OperateResult<short[]>> readCallback)
+        {
+            BeginRead(address, (ushort)(length * WordLength), read =>
+            {
+                if (!read.IsSuccess)
+                {
+                    readCallback(OperateResult.CreateFailedResult<short[]>(read));
+                    return;
+                }
+                readCallback(OperateResult.CreateSuccessResult(ByteTransform.TransInt16(read.Content, 0, length)));
+            });
+        }
+
+        /// <summary>
+        /// 异步读取设备的ushort数据类型的数据
+        /// </summary>
+        /// <param name="address">起始地址</param>
+        /// <param name="readCallback">读取结果回调函数</param>
+        public void BeginReadUInt16(string address, Action<OperateResult<ushort>> readCallback)
+        {
+            BeginRead(address, WordLength, read =>
+            {
+                readCallback(GetUInt16ResultFromBytes(read));
+            });
+        }
+
+        /// <summary>
+        /// 异步读取设备的ushort类型的数组
+        /// </summary>
+        /// <param name="address">起始地址</param>
+        /// <param name="length">数组长度</param>
+        /// <param name="readCallback">读取结果回调函数</param>
+        public void BeginReadUInt16(string address, ushort length, Action<OperateResult<ushort[]>> readCallback)
+        {
+            BeginRead(address, (ushort)(length * WordLength), read =>
+            {
+                if (!read.IsSuccess)
+                {
+                    readCallback(OperateResult.CreateFailedResult<ushort[]>(read));
+                    return;
+                }
+                readCallback(OperateResult.CreateSuccessResult(ByteTransform.TransUInt16(read.Content, 0, length)));
+            });
+        }
+
+        /// <summary>
+        /// 异步读取设备的int类型的数据
+        /// </summary>
+        /// <param name="address">起始地址</param>
+        /// <param name="readCallback">读取结果回调函数</param>
+        public void BeginReadInt32(string address, Action<OperateResult<int>> readCallback)
+        {
+            BeginRead(address, (ushort)(2 * WordLength), read =>
+            {
+                readCallback(GetInt32ResultFromBytes(read));
+            });
+        }
+
+        /// <summary>
+        /// 异步读取设备的int类型的数组
+        /// </summary>
+        /// <param name="address">起始地址</param>
+        /// <param name="length">数组长度</param>
+        /// <param name="readCallback">读取结果回调函数</param>
+        public void BeginReadInt32(string address, ushort length, Action<OperateResult<int[]>> readCallback)
+        {
+            BeginRead(address, (ushort)(length * WordLength * 2), read =>
+            {
+                if (!read.IsSuccess)
+                {
+                    readCallback(OperateResult.CreateFailedResult<int[]>(read));
+                    return;
+                }
+                readCallback(OperateResult.CreateSuccessResult(ByteTransform.TransInt32(read.Content, 0, length)));
+            });
+        }
+
+        /// <summary>
+        /// 异步读取设备的uint类型的数据
+        /// </summary>
+        /// <param name="address">起始地址</param>
+        /// <param name="readCallback">读取结果回调函数</param>
+        public void BeginReadUInt32(string address, Action<OperateResult<uint>> readCallback)
+        {
+            BeginRead(address, (ushort)(2 * WordLength), read =>
+            {
+                readCallback(GetUInt32ResultFromBytes(read));
+            });
+        }
+
+        /// <summary>
+        /// 异步读取设备的uint类型的数组
+        /// </summary>
+        /// <param name="address">起始地址</param>
+        /// <param name="length">数组长度</param>
+        /// <param name="readCallback">读取结果回调函数</param>
+        public void BeginReadUInt32(string address, ushort length, Action<OperateResult<uint[]>> readCallback)
+        {
+            BeginRead(address, (ushort)(length * WordLength * 2), read =>
+            {
+                if (!read.IsSuccess)
+                {
+                    readCallback(OperateResult.CreateFailedResult<uint[]>(read));
+                    return;
+                }
+                readCallback(OperateResult.CreateSuccessResult(ByteTransform.TransUInt32(read.Content, 0, length)));
+            });
+        }
+
+        /// <summary>
+        /// 异步读取设备的float类型的数据
+        /// </summary>
+        /// <param name="address">起始地址</param>
+        /// <param name="readCallback">读取结果回调函数</param>
+        public void BeginReadFloat(string address, Action<OperateResult<float>> readCallback)
+        {
+            BeginRead(address, (ushort)(2 * WordLength), read =>
+            {
+                readCallback(GetSingleResultFromBytes(read));
+            });
+        }
+
+        /// <summary>
+        /// 异步读取设备的float类型的数组
+        /// </summary>
+        /// <param name="address">起始地址</param>
+        /// <param name="length">数组长度</param>
+        /// <param name="readCallback">读取结果回调函数</param>
+        public void BeginReadFloat(string address, ushort length, Action<OperateResult<float[]>> readCallback)
+        {
+            BeginRead(address, (ushort)(length * WordLength * 2), read =>
+            {
+                if (!read.IsSuccess)
+                {
+                    readCallback(OperateResult.CreateFailedResult<float[]>(read));
+                    return;
+                }
+                readCallback(OperateResult.CreateSuccessResult(ByteTransform.TransSingle(read.Content, 0, length)));
+            });
+        }
+
+        /// <summary>
+        /// 异步读取设备的long类型的数据
+        /// </summary>
+        /// <param name="address">起始地址</param>
+        /// <param name="readCallback">读取结果回调函数</param>
+        public void BeginReadInt64(string address, Action<OperateResult<long>> readCallback)
+        {
+            BeginRead(address, (ushort)(4 * WordLength), read =>
+            {
+                readCallback(GetInt64ResultFromBytes(read));
+            });
+        }
+
+        /// <summary>
+        /// 异步读取设备的long类型的数组
+        /// </summary>
+        /// <param name="address">起始地址</param>
+        /// <param name="length">数组长度</param>
+        /// <param name="readCallback">读取结果回调函数</param>
+        public void BeginReadInt64(string address, ushort length, Action<OperateResult<long[]>> readCallback)
+        {
+            BeginRead(address, (ushort)(length * WordLength * 4), read =>
+            {
+                if (!read.IsSuccess)
+                {
+                    readCallback(OperateResult.CreateFailedResult<long[]>(read));
+                    return;
+                }
+                readCallback(OperateResult.CreateSuccessResult(ByteTransform.TransInt64(read.Content, 0, length)));
+            });
+        }
+
+        /// <summary>
+        /// 异步读取设备的ulong类型的数据
+        /// </summary>
+        /// <param name="address">起始地址</param>
+        /// <param name="readCallback">读取结果回调函数</param>
+        public void BeginReadUInt64(string address, Action<OperateResult<ulong>> readCallback)
+        {
+            BeginRead(address, (ushort)(4 * WordLength), read =>
+            {
+                readCallback(GetUInt64ResultFromBytes(read));
+            });
+        }
+
+        /// <summary>
+        /// 异步读取设备的ulong类型的数组
+        /// </summary>
+        /// <param name="address">起始地址</param>
+        /// <param name="length">数组长度</param>
+        /// <param name="readCallback">读取结果回调函数</param>
+        public void BeginReadUInt64(string address, ushort length, Action<OperateResult<ulong[]>> readCallback)
+        {
+            BeginRead(address, (ushort)(length * WordLength * 4), read =>
+            {
+                if (!read.IsSuccess)
+                {
+                    readCallback(OperateResult.CreateFailedResult<ulong[]>(read));
+                    return;
+                }
+                readCallback(OperateResult.CreateSuccessResult(ByteTransform.TransUInt64(read.Content, 0, length)));
+            });
+        }
+
+        /// <summary>
+        /// 异步读取设备的double类型的数据
+        /// </summary>
+        /// <param name="address">起始地址</param>
+        /// <param name="readCallback">读取结果回调函数</param>
+        public void BeginReadDouble(string address, Action<OperateResult<double>> readCallback)
+        {
+            BeginRead(address, (ushort)(4 * WordLength), read =>
+            {
+                readCallback(GetDoubleResultFromBytes(read));
+            });
+        }
+
+        /// <summary>
+        /// 异步读取设备的double类型的数组
+        /// </summary>
+        /// <param name="address">起始地址</param>
+        /// <param name="length">数组长度</param>
+        /// <param name="readCallback">读取结果回调函数</param>
+        public void BeginReadDouble(string address, ushort length, Action<OperateResult<double[]>> readCallback)
+        {
+            BeginRead(address, (ushort)(length * WordLength * 4), read =>
+            {
+                if (!read.IsSuccess)
+                {
+                    readCallback(OperateResult.CreateFailedResult<double[]>(read));
+                    return;
+                }
+                readCallback(OperateResult.CreateSuccessResult(ByteTransform.TransDouble(read.Content, 0, length)));
+            });
+        }
+
+        /// <summary>
+        /// 异步读取设备的字符串数据，编码为ASCII
+        /// </summary>
+        /// <param name="address">起始地址</param>
+        /// <param name="length">地址长度</param>
+        /// <param name="readCallback">读取结果回调函数</param>
+        public void BeginReadString(string address, ushort length, Action<OperateResult<string>> readCallback)
+        {
+            BeginRead(address, length, read =>
+            {
+                readCallback(GetStringResultFromBytes(read));
+            });
+        }
+        #endregion
+
+        #region Begin Write Supprot
+
+        /// <summary>
+        /// 异步向设备中写入short数组
+        /// </summary>
+        /// <param name="address">数据地址</param>
+        /// <param name="values">实际数据</param>
+        /// <param name="writeCallback">写入结果回调函数</param>
+        public void BeginWrite(string address, short[] values, Action<OperateResult> writeCallback)
+        {
+            BeginWrite(address, ByteTransform.TransByte(values), write =>
+            {
+                writeCallback(write);
+            });
+        }
+
+        /// <summary>
+        ///  异步向设备中写入short数据
+        /// </summary>
+        /// <param name="address">数据地址</param>
+        /// <param name="value">实际数据</param>
+        /// <param name="writeCallback">写入结果回调函数</param>
+        public virtual void BeginWrite(string address, short value, Action<OperateResult> writeCallback)
+        {
+            BeginWrite(address, new short[] { value }, write =>
+            {
+                writeCallback(write);
+            });
+        }
+
+        /// <summary>
+        /// 异步向设备中写入ushort数组
+        /// </summary>
+        /// <param name="address">要写入的数据地址</param>
+        /// <param name="values">要写入的实际数据</param>
+        /// <param name="writeCallback">写入结果回调函数</param>
+        public void BeginWrite(string address, ushort[] values, Action<OperateResult> writeCallback)
+        {
+            BeginWrite(address, ByteTransform.TransByte(values), write =>
+            {
+                writeCallback(write);
+            });
+        }
+
+        /// <summary>
+        /// 异步向设备中写入ushort数据
+        /// </summary>
+        /// <param name="address">数据地址</param>
+        /// <param name="value">实际数据</param>
+        /// <param name="writeCallback">写入结果回调函数</param>
+        public virtual void BeginWrite(string address, ushort value, Action<OperateResult> writeCallback)
+        {
+            BeginWrite(address, new ushort[] { value }, write =>
+            {
+                writeCallback(write);
+            });
+        }
+
+        /// <summary>
+        /// 异步向设备中写入int数组
+        /// </summary>
+        /// <param name="address">数据地址</param>
+        /// <param name="values">实际数据</param>
+        /// <param name="writeCallback">写入结果回调函数</param>
+        public void BeginWrite(string address, int[] values, Action<OperateResult> writeCallback)
+        {
+            BeginWrite(address, ByteTransform.TransByte(values), write =>
+            {
+                writeCallback(write);
+            });
+        }
+
+        /// <summary>
+        /// 异步向设备中写入int数据
+        /// </summary>
+        /// <param name="address">数据地址</param>
+        /// <param name="value">实际数据</param>
+        /// <param name="writeCallback">写入结果回调函数</param>
+        public virtual void BeginWrite(string address, int value, Action<OperateResult> writeCallback)
+        {
+            BeginWrite(address, new int[] { value }, write =>
+            {
+                writeCallback(write);
+            });
+        }
+
+        /// <summary>
+        /// 异步向设备中写入uint数组
+        /// </summary>
+        /// <param name="address">数据地址</param>
+        /// <param name="values">实际数据</param>
+        /// <param name="writeCallback">写入结果回调函数</param>
+        public void BeginWrite(string address, uint[] values, Action<OperateResult> writeCallback)
+        {
+            BeginWrite(address, ByteTransform.TransByte(values), write =>
+            {
+                writeCallback(write);
+            });
+        }
+
+        /// <summary>
+        /// 异步向设备中写入uint数据
+        /// </summary>
+        /// <param name="address">数据地址</param>
+        /// <param name="value">实际数据</param>
+        /// <param name="writeCallback">写入结果回调函数</param>
+        public virtual void BeginWrite(string address, uint value, Action<OperateResult> writeCallback)
+        {
+            BeginWrite(address, new uint[] { value }, write =>
+            {
+                writeCallback(write);
+            });
+        }
+
+        /// <summary>
+        /// 异步向设备中写入float数组
+        /// </summary>
+        /// <param name="address">数据地址</param>
+        /// <param name="values">实际数据</param>
+        /// <param name="writeCallback">写入结果回调函数</param>
+        public void BeginWrite(string address, float[] values, Action<OperateResult> writeCallback)
+        {
+            BeginWrite(address, ByteTransform.TransByte(values), write =>
+            {
+                writeCallback(write);
+            });
+        }
+
+        /// <summary>
+        /// 异步向设备中写入float数据
+        /// </summary>
+        /// <param name="address">数据地址</param>
+        /// <param name="value">实际数据</param>
+        /// <param name="writeCallback">写入结果回调函数</param>
+        public virtual void BeginWrite(string address, float value, Action<OperateResult> writeCallback)
+        {
+            BeginWrite(address, new float[] { value }, write =>
+            {
+                writeCallback(write);
+            });
+        }
+
+        /// <summary>
+        /// 异步向设备中写入long数组
+        /// </summary>
+        /// <param name="address">数据地址</param>
+        /// <param name="values">实际数据</param>
+        /// <param name="writeCallback">写入结果回调函数</param>
+        public void BeginWrite(string address, long[] values, Action<OperateResult> writeCallback)
+        {
+            BeginWrite(address, ByteTransform.TransByte(values), write =>
+            {
+                writeCallback(write);
+            });
+        }
+
+        /// <summary>
+        /// 异步向设备中写入long数据
+        /// </summary>
+        /// <param name="address">数据地址</param>
+        /// <param name="value">实际数据</param>
+        /// <param name="writeCallback">写入结果回调函数</param>
+        public virtual void BeginWrite(string address, long value, Action<OperateResult> writeCallback)
+        {
+            BeginWrite(address, new long[] { value }, write =>
+            {
+                writeCallback(write);
+            });
+        }
+
+        /// <summary>
+        /// 异步向设备中写入ulong数组
+        /// </summary>
+        /// <param name="address">数据地址</param>
+        /// <param name="values">实际数据</param>
+        /// <param name="writeCallback">写入结果回调函数</param>
+        public void BeginWrite(string address, ulong[] values, Action<OperateResult> writeCallback)
+        {
+            BeginWrite(address, ByteTransform.TransByte(values), write =>
+            {
+                writeCallback(write);
+            });
+        }
+
+        /// <summary>
+        /// 异步向设备中写入ulong数据
+        /// </summary>
+        /// <param name="address">数据地址</param>
+        /// <param name="value">实际数据</param>
+        /// <param name="writeCallback">写入结果回调函数</param>
+        public virtual void BeginWrite(string address, ulong value, Action<OperateResult> writeCallback)
+        {
+            BeginWrite(address, new ulong[] { value }, write =>
+            {
+                writeCallback(write);
+            });
+        }
+
+        /// <summary>
+        /// 异步向设备中写入double数组
+        /// </summary>
+        /// <param name="address">数据地址</param>
+        /// <param name="values">实际数据</param>
+        /// <param name="writeCallback">写入结果回调函数</param>
+        public void BeginWrite(string address, double[] values, Action<OperateResult> writeCallback)
+        {
+            BeginWrite(address, ByteTransform.TransByte(values), write =>
+            {
+                writeCallback(write);
+            });
+        }
+
+        /// <summary>
+        /// 异步向设备中写入double数据
+        /// </summary>
+        /// <param name="address">数据地址</param>
+        /// <param name="value">实际数据</param>
+        /// <param name="writeCallback">写入结果回调函数</param>
+        public virtual void BeginWrite(string address, double value, Action<OperateResult> writeCallback)
+        {
+            BeginWrite(address, new double[] { value }, write =>
+            {
+                writeCallback(write);
+            });
+        }
+
+        /// <summary>
+        /// 异步向设备中写入字符串，编码格式为ASCII
+        /// </summary>
+        /// <param name="address">数据地址</param>
+        /// <param name="value">字符串数据</param>
+        /// <param name="writeCallback">写入结果回调函数</param>
+        public virtual void BeginWrite(string address, string value, Action<OperateResult> writeCallback)
+        {
+            byte[] temp = ByteTransform.TransByte(value, Encoding.ASCII);
+            if (WordLength == 1) temp = SoftBasic.ArrayExpandToLengthEven(temp);
+            BeginWrite(address, temp, write =>
+            {
+                writeCallback(write);
+            });
+        }
+
+        /// <summary>
+        /// 异步向设备中写入指定长度的字符串,超出截断，不够补0，编码格式为ASCII
+        /// </summary>
+        /// <param name="address">数据地址</param>
+        /// <param name="value">字符串数据</param>
+        /// <param name="length">指定的字符串长度，必须大于0</param>
+        /// <param name="writeCallback">写入结果回调函数</param>
+        public virtual void BeginWrite(string address, string value, int length, Action<OperateResult> writeCallback)
+        {
+            byte[] temp = ByteTransform.TransByte(value, Encoding.ASCII);
+            if (WordLength == 1) temp = SoftBasic.ArrayExpandToLengthEven(temp);
+            temp = SoftBasic.ArrayExpandToLength(temp, length);
+            BeginWrite(address, temp, write =>
+            {
+                writeCallback(write);
+            });
+        }
+
+        /// <summary>
+        /// 异步向设备中写入字符串，编码格式为Unicode
+        /// </summary>
+        /// <param name="address">数据地址</param>
+        /// <param name="value">字符串数据</param>
+        /// <param name="writeCallback">写入结果回调函数</param>
+        public virtual void BeginWriteUnicodeString(string address, string value, Action<OperateResult> writeCallback)
+        {
+            byte[] temp = ByteTransform.TransByte(value, Encoding.Unicode);
+            BeginWrite(address, temp, write =>
+            {
+                writeCallback(write);
+            });
+        }
+
+        /// <summary>
+        /// 异步向设备中写入指定长度的字符串,超出截断，不够补0，编码格式为Unicode
+        /// </summary>
+        /// <param name="address">数据地址</param>
+        /// <param name="value">字符串数据</param>
+        /// <param name="length">指定的字符串长度，必须大于0</param>
+        /// <returns>是否写入成功的结果对象 -> Whether to write a successful result object</returns>
+        public virtual void BeginWriteUnicodeString(string address, string value, int length, Action<OperateResult> writeCallback)
+        {
+            byte[] temp = ByteTransform.TransByte(value, Encoding.Unicode);
+            temp = SoftBasic.ArrayExpandToLength(temp, length * 2);
+            BeginWrite(address, temp, write =>
+            {
+                writeCallback(write);
+            });
+        }
+
+        #endregion
+
+        #endregion
+
         #region Object Override
 
         /// <summary>

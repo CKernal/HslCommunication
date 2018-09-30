@@ -220,6 +220,35 @@ namespace HslCommunication.Core.Net
 //#endif
         }
 
+        protected void Receive(Socket socket, int length, Action<OperateResult<byte[]>> readCallback)
+        {
+            if (length == 0)
+            {
+                readCallback(OperateResult.CreateSuccessResult(new byte[0]));
+                return;
+            }
+
+            try
+            {
+                var state = new StateObject(length);
+                state.ReceiveCallback = readCallback;
+                state.WorkSocket = socket;
+                // Begin receiving the data from the remote device.
+                socket.BeginReceive(state.Buffer, state.AlreadyDealLength,
+                    state.DataLength - state.AlreadyDealLength, SocketFlags.None,
+                    new AsyncCallback(AsyncReceiveCallback), state);
+            }
+            catch (Exception ex)
+            {
+                // 发生了错误，直接返回
+                LogNet?.WriteException(ToString(), ex);
+                socket?.Close();
+                var result = new OperateResult<byte[]>();
+                result.Message = ex.Message;
+                readCallback(result);
+            }
+        }
+
 
         private void ReceiveCallback( IAsyncResult ar )
         {
@@ -264,11 +293,63 @@ namespace HslCommunication.Core.Net
             }
         }
 
+        private void AsyncReceiveCallback(IAsyncResult ar)
+        {
+            if (ar.AsyncState is StateObject state)
+            {
+                try
+                {
+                    Socket client = state.WorkSocket;
+                    int bytesRead = client.EndReceive(ar);
+
+                    if (bytesRead > 0)
+                    {
+                        // 接收到了数据
+                        state.AlreadyDealLength += bytesRead;
+                        if (state.AlreadyDealLength < state.DataLength)
+                        {
+                            // 获取接下来的所有的数据
+                            client.BeginReceive(state.Buffer, state.AlreadyDealLength,
+                                state.DataLength - state.AlreadyDealLength, SocketFlags.None,
+                                new AsyncCallback(AsyncReceiveCallback), state);
+                        }
+                        else
+                        {
+                            // 接收到了所有的数据，开始回调
+                            var result = new OperateResult<byte[]>();
+                            result.Content = state.Buffer;
+                            result.IsSuccess = true;
+                            state.ReceiveCallback(result);
+                        }
+                    }
+                    else
+                    {
+                        // 对方关闭了网络通讯
+                        state.IsClose = true;
+                        state.WorkSocket?.Close();
+                        var result = new OperateResult<byte[]>();
+                        result.Message = StringResources.Language.RemoteClosedConnection;
+                        state.ReceiveCallback(result);
+                    }
+                }
+                catch (Exception ex)
+                {
+                    state.IsError = true;
+                    LogNet?.WriteException(ToString(), ex);
+                    state.ErrerMsg = ex.Message;
+                    state.WorkSocket?.Close();
+                    var result = new OperateResult<byte[]>();
+                    result.Message = state.ErrerMsg;
+                    state.ReceiveCallback(result);
+                }
+            }
+        }
+
 
         #endregion
 
         #region Receive Message
-        
+
         /// <summary>
         /// 接收一条完整的数据，使用异步接收完成，包含了指令头信息
         /// </summary>
@@ -334,7 +415,79 @@ namespace HslCommunication.Core.Net
             result.IsSuccess = true;
             return result;
         }
-        
+
+        protected void ReceiveMessage<TNetMessage>(Socket socket, int timeOut, TNetMessage netMsg, Action<OperateResult<TNetMessage>> readCallback) where TNetMessage : INetMessage
+        {
+            OperateResult<TNetMessage> result = new OperateResult<TNetMessage>();
+
+            // 超时接收的代码验证
+            HslTimeOut hslTimeOut = new HslTimeOut()
+            {
+                DelayTime = timeOut,
+                WorkSocket = socket,
+            };
+            if (timeOut > 0) ThreadPool.QueueUserWorkItem(new WaitCallback(ThreadPoolCheckTimeOut), hslTimeOut);
+
+            // 接收指令头
+            Receive(socket, netMsg.ProtocolHeadBytesLength, headResult => 
+            {
+                if (!headResult.IsSuccess)
+                {
+                    hslTimeOut.IsSuccessful = true;
+                    result.CopyErrorFromOther(headResult);
+                    readCallback(result);
+                    return;
+                }
+
+                netMsg.HeadBytes = headResult.Content;
+                if (!netMsg.CheckHeadBytesLegal(Token.ToByteArray()))
+                {
+                    // 令牌校验失败
+                    hslTimeOut.IsSuccessful = true;
+                    socket?.Close();
+                    LogNet?.WriteError(ToString(), StringResources.Language.TokenCheckFailed);
+                    result.Message = StringResources.Language.TokenCheckFailed;
+                    readCallback(result);
+                    return;
+                }
+
+
+                int contentLength = netMsg.GetContentLengthByHeadBytes();
+                if (contentLength == 0)
+                {
+                    netMsg.ContentBytes = new byte[0];
+                    // 防止没有实例化造成后续的操作失败
+                    if (netMsg.ContentBytes == null) netMsg.ContentBytes = new byte[0];
+                    hslTimeOut.IsSuccessful = true;
+                    result.Content = netMsg;
+                    result.IsSuccess = true;
+                    readCallback(result);
+                }
+                else
+                {
+                    Receive(socket, contentLength, contentResult => 
+                    {
+                        if (!contentResult.IsSuccess)
+                        {
+                            hslTimeOut.IsSuccessful = true;
+                            result.CopyErrorFromOther(contentResult);
+                            readCallback(result);
+                            return;
+                        }
+
+                        netMsg.ContentBytes = contentResult.Content;
+
+                        // 防止没有实例化造成后续的操作失败
+                        if (netMsg.ContentBytes == null) netMsg.ContentBytes = new byte[0];
+                        hslTimeOut.IsSuccessful = true;
+                        result.Content = netMsg;
+                        result.IsSuccess = true;
+                        readCallback(result);
+                    });
+                }
+            });
+
+        }
 
         #endregion
 
@@ -392,6 +545,35 @@ namespace HslCommunication.Core.Net
             return result;
         }
 
+        protected void Send(Socket socket, byte[] data, Action<OperateResult> sendCallback)
+        {
+            if (data == null)
+            {
+                sendCallback(OperateResult.CreateSuccessResult());
+                return;
+            }
+
+            try
+            {
+                var state = new StateObject(data.Length);
+                state.WorkSocket = socket;
+                state.Buffer = data;
+
+                socket.BeginSend(state.Buffer, state.AlreadyDealLength, state.DataLength - state.AlreadyDealLength,
+                    SocketFlags.None, new AsyncCallback(AsyncSendCallBack), state);
+            }
+            catch (Exception ex)
+            {
+                // 发生了错误，直接返回
+                LogNet?.WriteException(ToString(), ex);
+                socket?.Close();
+
+                var result = new OperateResult();
+                result.Message = ex.Message;
+                sendCallback(result);
+            }
+        }
+
         /// <summary>
         /// 发送数据异步返回的方法
         /// </summary>
@@ -425,6 +607,46 @@ namespace HslCommunication.Core.Net
                     LogNet?.WriteException( ToString( ), ex );
                     state.ErrerMsg = ex.Message;
                     state.WaitDone.Set( );
+                }
+            }
+        }
+
+        private void AsyncSendCallBack(IAsyncResult ar)
+        {
+            if (ar.AsyncState is StateObject state)
+            {
+                try
+                {
+                    Socket socket = state.WorkSocket;
+                    int byteSend = socket.EndSend(ar);
+                    state.AlreadyDealLength += byteSend;
+
+                    if (state.AlreadyDealLength < state.DataLength)
+                    {
+                        // 继续发送数据
+                        socket.BeginSend(state.Buffer, state.AlreadyDealLength, state.DataLength - state.AlreadyDealLength,
+                            SocketFlags.None, new AsyncCallback(SendCallBack), state);
+                    }
+                    else
+                    {
+                        // 发送完成
+                        var result = new OperateResult();
+                        result.IsSuccess = true;
+                        result.Message = StringResources.Language.SuccessText;
+                        state.SendCallback(result);
+                    }
+                }
+                catch (Exception ex)
+                {
+                    // 发生了异常
+                    state.IsError = true;
+                    LogNet?.WriteException(ToString(), ex);
+                    state.ErrerMsg = ex.Message;
+                    state.WorkSocket?.Close();
+
+                    var result = new OperateResult();
+                    result.Message = state.ErrerMsg;
+                    state.SendCallback(result);
                 }
             }
         }
@@ -529,6 +751,38 @@ namespace HslCommunication.Core.Net
             return result;
         }
 
+        protected void CreateSocketAndConnect(IPEndPoint endPoint, int timeOut, Action<OperateResult<Socket>> connectCallback)
+        {
+            var socket = new Socket(AddressFamily.InterNetwork, SocketType.Stream, ProtocolType.Tcp);
+
+            // 超时验证的信息
+            HslTimeOut connectTimeout = new HslTimeOut()
+            {
+                WorkSocket = socket,
+                DelayTime = timeOut
+            };
+            ThreadPool.QueueUserWorkItem(new WaitCallback(ThreadPoolCheckTimeOut), connectTimeout);
+
+            try
+            {
+                var state = new StateObject();
+                state.HslTimeOut = connectTimeout;
+                state.ConnectCallback = connectCallback;
+                state.WorkSocket = socket;
+                socket.BeginConnect(endPoint, new AsyncCallback(AsyncConnectCallBack), state);
+            }
+            catch (Exception ex)
+            {
+                // 直接失败
+                connectTimeout.IsSuccessful = true;                                  // 退出线程池的超时检查
+                LogNet?.WriteException(ToString(), ex);                           // 记录错误日志
+                socket.Close();                                                     // 关闭网络信息
+
+                var result = new OperateResult<Socket>();
+                result.Message = StringResources.Language.ConnectedFailed + ex.Message;       // 传递错误消息
+                connectCallback(result);
+            }
+        }
 
         /// <summary>
         /// 当连接的结果返回
@@ -552,6 +806,40 @@ namespace HslCommunication.Core.Net
                     state.ErrerMsg = ex.Message;
                     state.WaitDone.Set( );
                 }
+            }
+        }
+
+        private void AsyncConnectCallBack(IAsyncResult ar)
+        {
+            if (ar.AsyncState is StateObject state)
+            {
+                try
+                {
+                    Socket socket = state.WorkSocket;
+                    socket.EndConnect(ar);
+                    state.HslTimeOut.IsSuccessful = true;
+
+                    var result = new OperateResult<Socket>();
+                    result.Content = socket;
+                    result.IsSuccess = true;
+                    state.ConnectCallback(result);
+                }
+                catch (Exception ex)
+                {
+                    // 发生了异常
+                    state.IsError = true;
+                    LogNet?.WriteException(ToString(), ex);
+                    state.ErrerMsg = ex.Message;
+                    state.HslTimeOut.IsSuccessful = true;
+
+                    var result = new OperateResult<Socket>();
+                    result.Message = StringResources.Language.ConnectedFailed + state.ErrerMsg;
+                    state.WorkSocket?.Close();
+                    state.ConnectCallback(result);
+                }
+
+                state.Clear();
+                state = null;
             }
         }
 

@@ -264,6 +264,38 @@ namespace HslCommunication.Profinet.Omron
             return OperateResult.CreateSuccessResult( ) ;
         }
 
+        protected override void InitializationOnConnect(Socket socket, Action<OperateResult> connectCallback)
+        {
+            // 握手信号
+            ReadFromCoreServerBase(socket, handSingle, read =>
+            {
+                if (!read.IsSuccess)
+                {
+                    connectCallback(read);
+                    return;
+                }
+
+                // 检查返回的状态
+                byte[] buffer = new byte[4];
+                buffer[0] = read.Content2[7];
+                buffer[1] = read.Content2[6];
+                buffer[2] = read.Content2[5];
+                buffer[3] = read.Content2[4];
+
+                int status = BitConverter.ToInt32(buffer, 0);
+                if (status != 0)
+                {
+                    connectCallback(new OperateResult(status, GetStatusDescription(status)));
+                    return;
+                }
+
+                // 提取PLC的节点地址
+                if (read.Content2.Length >= 16) DA1 = read.Content2[15];
+
+                connectCallback(OperateResult.CreateSuccessResult());
+            });
+        }
+
         #endregion
 
         #region Read Support
@@ -552,6 +584,205 @@ namespace HslCommunication.Profinet.Omron
             0x00, 0x00, 0x00, 0x01  // 节点号
         };
 
+
+        #endregion
+
+        #region BeginRead Support
+
+        /// <summary>
+        /// 异步从欧姆龙PLC中读取想要的数据，读取单位为字
+        /// </summary>
+        /// <param name="address">读取地址，格式为"D100","C100","W100","H100","A100"</param>
+        /// <param name="length">读取的数据长度</param>
+        /// <param name="readCallback">读取结果回调函数</param>
+        public override void BeginRead(string address, ushort length, Action<OperateResult<byte[]>> readCallback)
+        {
+            //获取指令
+            var command = BuildReadCommand(address, length, false);
+            if (!command.IsSuccess)
+            {
+                readCallback(OperateResult.CreateFailedResult<byte[]>(command));
+                return;
+            }
+
+            // 核心数据交互
+            ReadFromCoreServer(command.Content, read =>
+            {
+                if (!read.IsSuccess)
+                {
+                    readCallback(OperateResult.CreateFailedResult<byte[]>(read));
+                    return;
+                }
+
+                // 数据有效性分析
+                OperateResult<byte[]> valid = ResponseValidAnalysis(read.Content, true);
+                if (!valid.IsSuccess)
+                {
+                    readCallback(OperateResult.CreateFailedResult<byte[]>(valid));
+                    return;
+                }
+
+                // 读取到了正确的数据
+                readCallback(OperateResult.CreateSuccessResult(valid.Content));
+            });
+        }
+
+
+        /// <summary>
+        /// 异步从欧姆龙PLC中批量读取位软元件
+        /// </summary>
+        /// <param name="address">读取地址，格式为"D100","C100","W100","H100","A100"</param>
+        /// <param name="length">读取的长度</param>
+        /// <param name="readCallback">读取结果回调函数</param>
+        public void BeginReadBool(string address, ushort length, Action<OperateResult<bool[]>> readCallback)
+        {
+            //获取指令
+            var command = BuildReadCommand(address, length, true);
+            if (!command.IsSuccess)
+            {
+                readCallback(OperateResult.CreateFailedResult<bool[]>(command));
+                return;
+            }
+
+            // 核心数据交互
+            ReadFromCoreServer(command.Content, read =>
+            {
+                if (!read.IsSuccess)
+                {
+                    readCallback(OperateResult.CreateFailedResult<bool[]>(read));
+                    return;
+                }
+
+                // 数据有效性分析
+                OperateResult<byte[]> valid = ResponseValidAnalysis(read.Content, true);
+                if (!valid.IsSuccess)
+                {
+                    readCallback(OperateResult.CreateFailedResult<bool[]>(valid));
+                    return;
+                }
+
+                // 返回正确的数据信息
+                readCallback(OperateResult.CreateSuccessResult(valid.Content.Select(m => m != 0x00 ? true : false).ToArray()));
+            });
+        }
+
+
+        /// <summary>
+        /// 异步从欧姆龙PLC中读取位软元件
+        /// </summary>
+        /// <param name="address">读取地址，格式为"D100.0","C100.15","W100.7","H100.4","A100.9"</param>
+        /// <param name="readCallback">读取结果回调函数</param>
+        public void BeginReadBool(string address, Action<OperateResult<bool>> readCallback)
+        {
+            BeginReadBool(address, 1, read =>
+            {
+                if (read.IsSuccess)
+                {
+                    readCallback(OperateResult.CreateSuccessResult(read.Content[0]));
+                }
+                else
+                {
+                    readCallback(OperateResult.CreateFailedResult<bool>(read));
+                }
+            });
+        }
+
+        #endregion
+
+        #region BeginWrite Support
+
+        /// <summary>
+        /// 异步向PLC写入数据，数据格式为原始的字节类型
+        /// </summary>
+        /// <param name="address">初始地址</param>
+        /// <param name="value">原始的字节数据</param>
+        /// <param name="writeCallback">写入结果回调函数</param>
+        public override void BeginWrite(string address, byte[] value, Action<OperateResult> writeCallback)
+        {
+            //获取指令
+            var command = BuildWriteCommand(address, value, false);
+            if (!command.IsSuccess)
+            {
+                writeCallback(command);
+                return;
+            }
+
+            // 核心数据交互
+            ReadFromCoreServer(command.Content, read =>
+            {
+                if (!read.IsSuccess)
+                {
+                    writeCallback(read);
+                    return;
+                }
+
+                // 数据有效性分析
+                OperateResult<byte[]> valid = ResponseValidAnalysis(read.Content, false);
+                if (!valid.IsSuccess)
+                {
+                    writeCallback(valid);
+                    return;
+                }
+                // 成功
+                writeCallback(OperateResult.CreateSuccessResult());
+            });
+        }
+
+
+        /// <summary>
+        /// 异步向PLC中位软元件写入bool数组，比如你写入D100,values[0]对应D100.0
+        /// </summary>
+        /// <param name="address">要写入的数据地址</param>
+        /// <param name="value">要写入的实际数据，长度为8的倍数</param>
+        /// <param name="writeCallback">写入结果回调函数</param>
+        public void BeginWrite(string address, bool value, Action<OperateResult> writeCallback)
+        {
+            BeginWrite(address, new bool[] { value }, write =>
+            {
+                writeCallback(write);
+            });
+        }
+
+
+        /// <summary>
+        /// 异步向PLC中位软元件写入bool数组，比如你写入D100,values[0]对应D100.0
+        /// </summary>
+        /// <param name="address">要写入的数据地址</param>
+        /// <param name="values">要写入的实际数据，可以指定任意的长度</param>
+        /// <param name="writeCallback">写入结果回调函数</param>
+        public void BeginWrite(string address, bool[] values, Action<OperateResult> writeCallback)
+        {
+            OperateResult result = new OperateResult();
+
+            //获取指令
+            var command = BuildWriteCommand(address, values.Select(m => m ? (byte)0x01 : (byte)0x00).ToArray(), true);
+            if (!command.IsSuccess)
+            {
+                writeCallback(command);
+                return;
+            }
+
+            // 核心数据交互
+            ReadFromCoreServer(command.Content, read =>
+            {
+                if (!read.IsSuccess)
+                {
+                    writeCallback(read);
+                    return;
+                }
+
+                // 数据有效性分析
+                OperateResult<byte[]> valid = ResponseValidAnalysis(read.Content, false);
+                if (!valid.IsSuccess)
+                {
+                    writeCallback(valid);
+                    return;
+                }
+
+                // 写入成功
+                writeCallback(OperateResult.CreateSuccessResult());
+            });
+        }
 
         #endregion
 

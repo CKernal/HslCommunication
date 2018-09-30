@@ -225,6 +225,33 @@ namespace HslCommunication.Core.Net
             return result;
         }
 
+        public void ConnectServer(Action<OperateResult> connectCallback)
+        {
+            isPersistentConn = true;
+            OperateResult result = new OperateResult();
+
+            // 重新连接之前，先将旧的数据进行清空
+            CoreSocket?.Close();
+
+            CreateSocketAndInitialication(rSocket => 
+            {
+                if (!rSocket.IsSuccess)
+                {
+                    IsSocketError = true;
+                    rSocket.Content = null;
+                    result.Message = rSocket.Message;
+                }
+                else
+                {
+                    CoreSocket = rSocket.Content;
+                    result.IsSuccess = true;
+                    LogNet?.WriteDebug(ToString(), StringResources.Language.NetEngineStart);
+                }
+
+                connectCallback(result);
+            });
+        }
+
 
         /// <summary>
         /// 使用指定的套接字创建异形客户端
@@ -319,6 +346,11 @@ namespace HslCommunication.Core.Net
             return OperateResult.CreateSuccessResult( );
         }
 
+        protected virtual void InitializationOnConnect(Socket socket, Action<OperateResult> connectCallback)
+        {
+            connectCallback(OperateResult.CreateSuccessResult());
+        }
+
         /// <summary>
         /// 在将要和服务器进行断开的情况下额外的操作，需要根据对应协议进行重写
         /// </summary>
@@ -396,6 +428,61 @@ namespace HslCommunication.Core.Net
             }
         }
 
+        private void GetAvailableSocket(Action<OperateResult<Socket>> connectCallback)
+        {
+            if (isPersistentConn)
+            {
+                // 如果是异形模式
+                if (isUseSpecifiedSocket)
+                {
+                    if (IsSocketError)
+                    {
+                        connectCallback(new OperateResult<Socket>(StringResources.Language.ConnectionIsNotAvailable));
+                        return;
+                    }
+                    else
+                    {
+                        connectCallback(OperateResult.CreateSuccessResult(CoreSocket));
+                        return;
+                    }
+                }
+                else
+                {
+                    // 长连接模式
+                    if (IsSocketError || CoreSocket == null)
+                    {
+                        ConnectServer(connect => 
+                        {
+                            if (!connect.IsSuccess)
+                            {
+                                IsSocketError = true;
+                                connectCallback(OperateResult.CreateFailedResult<Socket>(connect));
+                                return;
+                            }
+                            else
+                            {
+                                IsSocketError = false;
+                                connectCallback(OperateResult.CreateSuccessResult(CoreSocket));
+                                return;
+                            }
+                        });
+                    }
+                    else
+                    {
+                        connectCallback(OperateResult.CreateSuccessResult(CoreSocket));
+                        return;
+                    }
+                }
+            }
+            else
+            {
+                // 短连接模式
+                CreateSocketAndInitialication(connect => 
+                {
+                    connectCallback(connect);
+                });
+            }
+        }
 
         /// <summary>
         /// 连接并初始化网络套接字
@@ -416,6 +503,30 @@ namespace HslCommunication.Core.Net
                 }
             }
             return result;
+        }
+
+        private void CreateSocketAndInitialication(Action<OperateResult<Socket>> connectCallback)
+        {
+            CreateSocketAndConnect(new IPEndPoint(IPAddress.Parse(ipAddress), port), connectTimeOut, result => 
+            {
+                if (!result.IsSuccess)
+                {
+                    connectCallback(result);
+                    return;
+                }
+
+                // 初始化
+                InitializationOnConnect(result.Content, initi =>
+                {
+                    if (!initi.IsSuccess)
+                    {
+                        result.Content?.Close();
+                        result.IsSuccess = initi.IsSuccess;
+                        result.CopyErrorFromOther(initi);
+                    }
+                    connectCallback(result);
+                });
+            });
         }
 
 
@@ -443,6 +554,25 @@ namespace HslCommunication.Core.Net
             if (read.Content2.Length > 0) read.Content2.CopyTo( Content, read.Content1.Length );
 
             return OperateResult.CreateSuccessResult( Content );
+        }
+
+        public void ReadFromCoreServer(Socket socket, byte[] send, Action<OperateResult<byte[]>> readCallback)
+        {
+            ReadFromCoreServerBase(socket, send, read => 
+            {
+                if (!read.IsSuccess)
+                {
+                    readCallback(OperateResult.CreateFailedResult<byte[]>(read));
+                    return;
+                }
+
+                // 拼接结果数据
+                byte[] Content = new byte[read.Content1.Length + read.Content2.Length];
+                if (read.Content1.Length > 0) read.Content1.CopyTo(Content, 0);
+                if (read.Content2.Length > 0) read.Content2.CopyTo(Content, read.Content1.Length);
+
+                readCallback(OperateResult.CreateSuccessResult(Content));
+            });
         }
 
 
@@ -499,6 +629,52 @@ namespace HslCommunication.Core.Net
             return result;
         }
 
+        public void ReadFromCoreServer(byte[] send, Action<OperateResult<byte[]>> readCallback)
+        {
+            var result = new OperateResult<byte[]>();
+            // string tmp1 = BasicFramework.SoftBasic.ByteToHexString( send, '-' );
+
+            InteractiveLock.Enter();
+
+            // 获取有用的网络通道，如果没有，就建立新的连接
+            GetAvailableSocket(resultSocket => 
+            {
+                if (!resultSocket.IsSuccess)
+                {
+                    IsSocketError = true;
+                    if (AlienSession != null) AlienSession.IsStatusOk = false;
+                    InteractiveLock.Leave();
+                    result.CopyErrorFromOther(resultSocket);
+                    readCallback(result);
+                    return;
+                }
+
+                ReadFromCoreServer(resultSocket.Content, send, read =>
+                {
+                    if (read.IsSuccess)
+                    {
+                        IsSocketError = false;
+                        result.IsSuccess = read.IsSuccess;
+                        result.Content = read.Content;
+                        result.Message = StringResources.Language.SuccessText;
+                        //string tmp2 = BasicFramework.SoftBasic.ByteToHexString( result.Content, '-' );
+
+                    }
+                    else
+                    {
+                        IsSocketError = true;
+                        if (AlienSession != null) AlienSession.IsStatusOk = false;
+                        result.CopyErrorFromOther(read);
+                    }
+
+                    InteractiveLock.Leave();
+                    if (!isPersistentConn) resultSocket.Content?.Close();
+                    readCallback(result);
+                });
+            });
+
+        }
+
         /// <summary>
         /// 使用底层的数据报文来通讯，传入需要发送的消息，返回最终的数据结果，被拆分成了头子节和内容字节信息
         /// </summary>
@@ -539,6 +715,45 @@ namespace HslCommunication.Core.Net
             else
             {
                 return OperateResult.CreateSuccessResult( new byte[0], new byte[0] );
+            }
+        }
+
+        protected void ReadFromCoreServerBase(Socket socket, byte[] send, Action<OperateResult<byte[], byte[]>> readCallback)
+        {
+            // LogNet?.WriteDebug( ToString( ), "Command: " + BasicFramework.SoftBasic.ByteToHexString( send ) );
+            TNetMessage netMsg = new TNetMessage
+            {
+                SendBytes = send
+            };
+
+            // 发送数据信息
+            OperateResult sendResult = Send(socket, send);
+            if (!sendResult.IsSuccess)
+            {
+                socket?.Close();
+                readCallback(OperateResult.CreateFailedResult<byte[], byte[]>(sendResult));
+                return;
+            }
+
+            // 接收超时时间大于0时才允许接收远程的数据
+            if (receiveTimeOut >= 0)
+            {
+                // 接收数据信息
+                ReceiveMessage(socket, receiveTimeOut, netMsg, resultReceive => 
+                {
+                    if (!resultReceive.IsSuccess)
+                    {
+                        socket?.Close();
+                        readCallback(new OperateResult<byte[], byte[]>(StringResources.Language.ReceiveDataTimeout + receiveTimeOut));
+                        return;
+                    }
+                    readCallback(OperateResult.CreateSuccessResult(resultReceive.Content.HeadBytes, resultReceive.Content.ContentBytes));
+                    return;
+                });
+            }
+            else
+            {
+                readCallback(OperateResult.CreateSuccessResult(new byte[0], new byte[0]));
             }
         }
 

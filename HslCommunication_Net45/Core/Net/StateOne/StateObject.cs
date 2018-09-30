@@ -37,11 +37,32 @@ namespace HslCommunication.Core.Net
         /// </summary>
         public string UniqueId { get; set; }
 
+
+        /// <summary>
+        /// 异步连接完成时的回调函数
+        /// </summary>
+        public Action<OperateResult<Socket>> ConnectCallback { get; set; }
+
+        /// <summary>
+        /// 异步发送完成时的回调函数
+        /// </summary>
+        public Action<OperateResult> SendCallback { get; set; }
+
+        /// <summary>
+        /// 异步接收完成时的回调函数
+        /// </summary>
+        public Action<OperateResult<byte[]>> ReceiveCallback { get; set; }
+
+        /// <summary>
+        /// 超时监控对象
+        /// </summary>
+        public HslTimeOut HslTimeOut { get; set; }
+
         #endregion
 
         #region Public Member
 
-   
+
         /// <summary>
         /// 网络套接字
         /// </summary>
